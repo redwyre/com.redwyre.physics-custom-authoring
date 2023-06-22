@@ -1,13 +1,13 @@
 {
   "name": "com.redwyre.physics-custom-authoring",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "displayName": "Physics Custom Authoring",
   "description": "Provides a custom authoring experience for creating rigid bodies and colliders for Unity Physics",
   "unity": "2022.2",
   "unityRelease": "15f1",
   "documentationUrl": "https://docs.unity3d.com/Packages/com.unity.physics@1.0/manual/index.html",
   "dependencies": {
-    "com.unity.physics": "1.0.10"
+    "com.unity.physics": "1.0.11"
   },
   "keywords": [
     "physics"

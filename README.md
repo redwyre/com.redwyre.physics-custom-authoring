@@ -29,7 +29,7 @@ If you are already using OpenUPM you can merge this snippet with your project ma
         }
     ],
     "dependencies": {
-        "com.redwyre.physics-custom-authoring": "1.0.11"
+        "com.redwyre.physics-custom-authoring": "1.0.16"
     }
 }
 

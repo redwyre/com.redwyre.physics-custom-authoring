@@ -20,108 +20,8 @@ namespace Unity.Physics.Authoring
 
     public static partial class PhysicsShapeExtensions
     {
-        // used for de-skewing basis vectors; default priority assumes primary axis is z, secondary axis is y
-        public static readonly int3 k_DefaultAxisPriority = new int3(2, 1, 0);
-
         // avoids drift in axes we're not actually changing
         public const float kMinimumChange = HashableShapeInputs.k_DefaultLinearPrecision;
-
-        static readonly int[] k_NextAxis = { 1, 2, 0 };
-        static readonly int[] k_PrevAxis = { 2, 0, 1 };
-
-        // matrix to transform point from shape's local basis into world space
-        public static float4x4 GetBasisToWorldMatrix(
-            float4x4 localToWorld, float3 center, quaternion orientation, float3 size
-        ) =>
-            math.mul(localToWorld, float4x4.TRS(center, orientation, size));
-
-        static float4 DeskewSecondaryAxis(float4 primaryAxis, float4 secondaryAxis)
-        {
-            var n0 = math.normalizesafe(primaryAxis);
-            var dot = math.dot(secondaryAxis, n0);
-            return secondaryAxis - n0 * dot;
-        }
-
-        // priority is determined by length of each size dimension in the shape's basis after applying localToWorld transformation
-        public static int3 GetBasisAxisPriority(float4x4 basisToWorld)
-        {
-            var basisAxisLengths = basisToWorld.DecomposeScale();
-            var max = math.cmax(basisAxisLengths);
-            var min = math.cmin(basisAxisLengths);
-            if (max == min)
-                return k_DefaultAxisPriority;
-
-            var imax = max == basisAxisLengths.x ? 0 : max == basisAxisLengths.y ? 1 : 2;
-
-            basisToWorld[k_NextAxis[imax]] = DeskewSecondaryAxis(basisToWorld[imax], basisToWorld[k_NextAxis[imax]]);
-            basisToWorld[k_PrevAxis[imax]] = DeskewSecondaryAxis(basisToWorld[imax], basisToWorld[k_PrevAxis[imax]]);
-
-            basisAxisLengths = basisToWorld.DecomposeScale();
-            min = math.cmin(basisAxisLengths);
-            var imin = min == basisAxisLengths.x ? 0 : min == basisAxisLengths.y ? 1 : 2;
-            if (imin == imax)
-                imin = k_NextAxis[imax];
-            var imid = k_NextAxis[imax] == imin ? k_PrevAxis[imax] : k_NextAxis[imax];
-
-            return new int3(imax, imid, imin);
-        }
-
-        [Conditional(CompilationSymbols.CollectionsChecksSymbol), Conditional(CompilationSymbols.DebugChecksSymbol)]
-        static void CheckBasisPriorityAndThrow(int3 basisPriority)
-        {
-            if (
-                basisPriority.x == basisPriority.y
-                || basisPriority.x == basisPriority.z
-                || basisPriority.y == basisPriority.z
-            )
-                throw new ArgumentException(nameof(basisPriority));
-        }
-
-        public static bool HasNonUniformScale(this float4x4 m)
-        {
-            var s = new float3(math.lengthsq(m.c0.xyz), math.lengthsq(m.c1.xyz), math.lengthsq(m.c2.xyz));
-            return math.cmin(s) != math.cmax(s);
-        }
-
-        // matrix to transform point on a primitive from bake space into space of the shape
-        internal static float4x4 GetPrimitiveBakeToShapeMatrix(
-            float4x4 localToWorld, float4x4 shapeToWorld, ref float3 center, ref EulerAngles orientation, float3 scale, int3 basisPriority
-        )
-        {
-            CheckBasisPriorityAndThrow(basisPriority);
-
-            var localToBasis = float4x4.TRS(center, orientation, scale);
-            // correct for imprecision in cases of no scale to prevent e.g., convex radius from being altered
-            if (scale.Equals(new float3(1f)))
-            {
-                localToBasis.c0 = math.normalizesafe(localToBasis.c0);
-                localToBasis.c1 = math.normalizesafe(localToBasis.c1);
-                localToBasis.c2 = math.normalizesafe(localToBasis.c2);
-            }
-            var localToBake = math.mul(localToWorld, localToBasis);
-
-            if (localToBake.HasNonUniformScale() || localToBake.HasShear())
-            {
-                // deskew second longest axis with respect to longest axis
-                localToBake[basisPriority[1]] =
-                    DeskewSecondaryAxis(localToBake[basisPriority[0]], localToBake[basisPriority[1]]);
-
-                // recompute third axes from first two
-                var n2 = math.normalizesafe(
-                    new float4(math.cross(localToBake[basisPriority[0]].xyz, localToBake[basisPriority[1]].xyz), 0f)
-                );
-                localToBake[basisPriority[2]] = n2 * math.dot(localToBake[basisPriority[2]], n2);
-            }
-
-            var bakeToShape = math.mul(math.inverse(shapeToWorld), localToBake);
-            // transform baked center/orientation (i.e. primitive basis) into shape space
-            orientation.SetValue(
-                quaternion.LookRotationSafe(bakeToShape[basisPriority[0]].xyz, bakeToShape[basisPriority[1]].xyz)
-            );
-            center = bakeToShape.c3.xyz;
-
-            return bakeToShape;
-        }
 
         internal static CollisionFilter GetFilter(this PhysicsShapeAuthoring shape)
         {
@@ -208,7 +108,7 @@ namespace Unity.Physics.Authoring
         }
 
         internal static BoxGeometry BakeToBodySpace(
-            this BoxGeometry box, float4x4 localToWorld, float4x4 shapeToWorld, EulerAngles orientation
+            this BoxGeometry box, float4x4 localToWorld, float4x4 shapeToWorld, EulerAngles orientation, bool bakeUniformScale = true
         )
         {
             using (var geometry = new NativeArray<BoxGeometry>(1, Allocator.TempJob) { [0] = box })
@@ -216,9 +116,10 @@ namespace Unity.Physics.Authoring
                 var job = new BakeBoxJob
                 {
                     Box = geometry,
-                    localToWorld = localToWorld,
-                    shapeToWorld = shapeToWorld,
-                    orientation = orientation
+                    LocalToWorld = localToWorld,
+                    ShapeToWorld = shapeToWorld,
+                    Orientation = orientation,
+                    BakeUniformScale = bakeUniformScale
                 };
                 job.Run();
                 return geometry[0];
@@ -281,9 +182,10 @@ namespace Unity.Physics.Authoring
             this PhysicsShapeAuthoring shape, out float3 vertex0, out float3 vertex1, out float3 vertex2, out float3 vertex3
         )
         {
+            var bakeToShape = shape.GetLocalToShapeMatrix();
             shape.GetPlaneProperties(out var center, out var size, out EulerAngles orientation);
             BakeToBodySpace(
-                center, size, orientation, shape.transform.localToWorldMatrix, shape.GetShapeToWorldMatrix(),
+                center, size, orientation, bakeToShape,
                 out vertex0, out vertex1, out vertex2, out vertex3
             );
         }
@@ -292,60 +194,6 @@ namespace Unity.Physics.Authoring
         {
             shape.GetConvexHullProperties(pointCloud, true, default, default, default, default);
             shape.BakePoints(pointCloud.AsArray());
-        }
-
-        internal static Hash128 GetBakedMeshInputs(this PhysicsShapeAuthoring shape, HashSet<UnityEngine.Mesh> meshAssets = null)
-        {
-            using (var inputs = new NativeList<HashableShapeInputs>(8, Allocator.TempJob))
-            {
-                shape.GetMeshProperties(default, default, true, inputs, meshAssets);
-                using (var hash = new NativeArray<Hash128>(1, Allocator.TempJob))
-                using (var allSkinIndices = new NativeArray<int>(0, Allocator.TempJob))
-                using (var allBlendShapeWeights = new NativeArray<float>(0, Allocator.TempJob))
-                {
-                    var job = new GetShapeInputsHashJob
-                    {
-                        Result = hash,
-                        ForceUniqueIdentifier = (uint)(shape.ForceUnique ? shape.GetInstanceID() : 0),
-                        Material = shape.GetMaterial(),
-                        CollisionFilter = shape.GetFilter(),
-                        BakeFromShape = shape.GetLocalToShapeMatrix(),
-                        Inputs = inputs.AsArray(),
-                        AllSkinIndices = allSkinIndices,
-                        AllBlendShapeWeights = allBlendShapeWeights
-                    };
-                    job.Run();
-                    return hash[0];
-                }
-            }
-        }
-
-        internal static Hash128 GetBakedConvexInputs(this PhysicsShapeAuthoring shape, HashSet<UnityEngine.Mesh> meshAssets)
-        {
-            using (var inputs = new NativeList<HashableShapeInputs>(8, Allocator.TempJob))
-            using (var allSkinIndices = new NativeList<int>(4096, Allocator.TempJob))
-            using (var allBlendShapeWeights = new NativeList<float>(64, Allocator.TempJob))
-            {
-                shape.GetConvexHullProperties(default, true, inputs, allSkinIndices, allBlendShapeWeights, meshAssets);
-
-                using (var hash = new NativeArray<Hash128>(1, Allocator.TempJob))
-                {
-                    var job = new GetShapeInputsHashJob
-                    {
-                        Result = hash,
-                        ForceUniqueIdentifier = (uint)(shape.ForceUnique ? shape.GetInstanceID() : 0),
-                        GenerationParameters = shape.ConvexHullGenerationParameters,
-                        Material = shape.GetMaterial(),
-                        CollisionFilter = shape.GetFilter(),
-                        BakeFromShape = shape.GetLocalToShapeMatrix(),
-                        Inputs = inputs.AsArray(),
-                        AllSkinIndices = allSkinIndices.AsArray(),
-                        AllBlendShapeWeights = allBlendShapeWeights.AsArray()
-                    };
-                    job.Run();
-                    return hash[0];
-                }
-            }
         }
 
         public static void GetBakedMeshProperties(
